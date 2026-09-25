@@ -1,0 +1,16 @@
+# dsh-guard is plain text and JavaScript; it holds no line-ending-sensitive
+# vendored bytes the way dsh-subagent-permissions does, but `* -text` keeps
+# checkouts byte-identical across platforms, which is what the `.ps1` scripts and
+# the Chinese READMEs need (a CRLF rewrite would also invalidate the UTF-8 BOM
+# handling those scripts depend on).
+* -text
+
+# Windows PowerShell 5.1 cannot parse a UTF-8 script without a BOM, and these
+# four scripts carry Chinese text. Keep them out of any auto-detection or
+# normalization that might strip the BOM or rewrite the encoding.
+*.ps1 -text working-tree-encoding=UTF-8
+
+# Binary artefacts never belong in a text diff.
+*.png binary
+*.jpg binary
+*.zip binary

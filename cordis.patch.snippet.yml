@@ -1,0 +1,43 @@
+# dsh-guard：为 dsh Web GUI 提供「退出」按钮、崩溃取证、任务快照与独立看门狗。
+#
+# `stateDir` 是全部状态文件的落点（instance/status/snapshot/resume/crash/
+# crashes.log/dsh.log/watchdog.log）。默认 `$DSH_HOME/guard`，即
+# `C:\Users\<你>\.dsh\guard`。
+#
+# `watchdog: true`（默认）会在 dsh 启动时拉起一个 detached 的独立进程，
+# 它拿着本次启动的完整命令行；dsh 被异常终止时由它重启，并按需要续跑。
+# 点「退出」按钮会写下 clean-exit 标记，看门狗看到标记后自行退出，不留后台进程。
+#
+# 重启不会无限进行：
+#   - `rapidDeathMs` 内退出算「刚起来就崩」，`maxRapidRestarts` 次连续这样
+#     就直接放弃并写 watchdog-halt.json —— 重启后立刻再崩说明启动本身有问题，
+#     继续拉起只会刷出更多注定失败的进程。
+#   - `maxRestarts` / `crashWindowMs` 是另一道闸：窗口内崩溃次数超限同样停止。
+#   - `portConflict` 处理端口被别人占住的情况：`halt`（默认）停下并诊断，
+#     `replace` 则杀掉占用者。注意 dsh 的 `--host 0.0.0.0` 是被官方禁用的，
+#     所以端口冲突通常意味着「已经有一个 dsh 在跑」。
+#
+# `autoResume: true` 才会在重启后自动往原会话注入一条续跑 prompt；默认 false，
+# 只重启并保留快照，由人决定何时继续。`resumePrompt` 里的 {{snapshot}} 会被
+# 替换成任务列表与上下文摘要。
+#
+# 下面 BEGIN/END 之间的内容由 install-guard.ps1 整体替换，手改会被覆盖：
+# 要长期保留的改动请改这里的模板，或把该行挪到 END 之后。
+# >>> dsh-guard managed block — install-guard.ps1 replaces everything between the markers >>>
+- insert:
+    - id: guard
+      name: 'dsh-guard'
+      config:
+        stateDir: ''            # 空 = $DSH_HOME/guard
+        watchdog: true
+        autoResume: false
+        restartDelayMs: 1500
+        maxRestarts: 10
+        crashWindowMs: 600000
+        rapidDeathMs: 3000
+        maxRapidRestarts: 3
+        portConflict: halt
+        tailEvents: 40
+        timeoutMs: 4000
+        keepSessions: 12
+# <<< dsh-guard managed block <<<

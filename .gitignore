@@ -1,0 +1,11 @@
+# Verification leftovers: the quit E2E builds a throwaway DSH_HOME and, when it
+# cannot create a junction, copies this package into it.
+test/.sandbox/
+verify/
+*.tmp-*
+
+# Editor and OS noise.
+.vscode/
+.idea/
+Thumbs.db
+desktop.ini

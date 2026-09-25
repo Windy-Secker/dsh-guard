@@ -1,0 +1,47 @@
+{
+  "name": "dsh-guard",
+  "version": "0.1.0",
+  "description": "Crash guard for the DeepSeek Harness Web GUI: a Quit button beside Settings, a task snapshot that survives a silent crash, a crash-reason recorder, and an independent watchdog process that restarts dsh and can restore the interrupted task.",
+  "keywords": [
+    "deepseek-harness",
+    "dsh",
+    "cordis-plugin",
+    "watchdog",
+    "crash-recovery",
+    "session-snapshot",
+    "process-supervisor"
+  ],
+  "type": "module",
+  "main": "lib/index.js",
+  "exports": {
+    ".": "./lib/index.js",
+    "./client": "./lib/client.js",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "lib/index.js",
+    "lib/client.js",
+    "bin/watchdog.mjs",
+    "install-guard.ps1",
+    "uninstall-guard.ps1",
+    "guard-autostart.ps1",
+    "guard-status.ps1",
+    "cordis.patch.snippet.yml",
+    "cordis.patch.entry.txt",
+    "README.md",
+    "README.zh.md",
+    "LICENSE",
+    "test/*.mjs"
+  ],
+  "scripts": {
+    "test": "node test/snapshot.test.mjs && node test/watchdog-policy.test.mjs && node test/check-patch.mjs",
+    "test:e2e": "node test/quit-e2e.mjs",
+    "status": "powershell -NoProfile -ExecutionPolicy Bypass -File guard-status.ps1"
+  },
+  "dsh": {
+    "client": {
+      "platform": "web"
+    }
+  },
+  "license": "MIT"
+}
