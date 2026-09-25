@@ -18,6 +18,7 @@
 
 import { readFileSync } from "node:fs";
 import { strict as assert } from "node:assert";
+import { fileURLToPath } from "node:url";
 
 /**
  * Read one YAML scalar, ignoring a trailing comment and an explicit `!!js` tag.
@@ -94,11 +95,21 @@ export function findGuardRow(text) {
 	return { found: true, name, config, duplicates: anchors.length - 1, body };
 }
 
-const path = process.argv[2];
-if (path === undefined) {
-	console.error("usage: node test/check-patch.mjs <cordis.patch.yml>");
-	process.exit(2);
+/**
+ * Resolve what to check: the path argument, or this repository's own snippet.
+ *
+ * Defaulting to the bundled template keeps `npm test` meaningful in a fresh
+ * clone. It also keeps the earlier lesson honest: a check that cannot run
+ * anywhere except the author's machine is not a check.
+ * @returns the file to inspect.
+ */
+function resolveTarget() {
+	const argument = process.argv[2];
+	if (argument !== undefined) return argument;
+	return fileURLToPath(new URL("../cordis.patch.snippet.yml", import.meta.url));
 }
+
+const path = resolveTarget();
 
 let text;
 try {
