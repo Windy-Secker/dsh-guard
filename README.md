@@ -54,11 +54,20 @@ Giving up is loud, not silent: the reason lands in `watchdog-halt.json`
 failed dsh's output, so a boot loop leaves a diagnosis rather than a pile of
 orphan processes.
 
-Tests: `node test/snapshot.test.mjs`, `node test/watchdog-policy.test.mjs`,
-`node test/check-patch.mjs <patch>`, or `.\install-guard.ps1 -Test` for those
-three. `node test/quit-e2e.mjs` additionally boots a throwaway dsh in an isolated
-`DSH_HOME` and proves the whole Quit path: status route, quit accepted,
-`clean-exit.json` written, exit code 0, watchdog stands down.
+Tests: `node test/patch-guard.test.mjs` (profile-patch editor: idempotent
+install/remove), `node test/client-bundle.test.mjs` (the served bundle must
+register a factory on `window.__ModuleLoader__` and may only require platform
+seed modules), `node test/snapshot.test.mjs`, `node test/watchdog-policy.test.mjs`,
+`node test/check-patch.mjs <patch>`, or `.\install-guard.ps1 -Test` for all of
+those. `node test/quit-e2e.mjs` additionally boots a throwaway dsh in an isolated
+`DSH_HOME` and proves the whole Quit path: status route, the served client bundle
+registers, quit accepted, `clean-exit.json` written, exit code 0, watchdog stands
+down.
+
+All profile-patch editing goes through one helper, `bin/patch-guard.mjs`. The
+installer and uninstaller used to carry separate copies of that string surgery and
+both were wrong differently, so a profile accumulated duplicate comment blocks and
+orphaned `- insert:` entries. One implementation, covered by tests.
 
 Honest limits: the plugin shares fate with the process it guards, so a safety-net
 scheduled task (installed by the installer) is what brings the watchdog back if

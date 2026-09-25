@@ -22,6 +22,7 @@
     "lib/index.js",
     "lib/client.js",
     "bin/watchdog.mjs",
+    "bin/patch-guard.mjs",
     "install-guard.ps1",
     "uninstall-guard.ps1",
     "guard-autostart.ps1",
@@ -34,8 +35,7 @@
     "test/*.mjs"
   ],
   "scripts": {
-    "test": "node test/snapshot.test.mjs && node test/watchdog-policy.test.mjs && node test/check-patch.mjs",
-    "test:e2e": "node test/quit-e2e.mjs",
+    "test": "node test/patch-guard.test.mjs && node test/client-bundle.test.mjs && node test/snapshot.test.mjs && node test/watchdog-policy.test.mjs && node test/check-patch.mjs",
     "status": "powershell -NoProfile -ExecutionPolicy Bypass -File guard-status.ps1"
   },
   "dsh": {

@@ -1,14 +1,15 @@
 ﻿# uninstall-guard.ps1 - remove dsh-guard from a dsh profile.
 #
 # Stops the watchdog for the named state directory, removes the scheduled task,
-# removes the package from the profile, and strips the mount row from the profile
-# patch. The state directory (snapshots, crash records, logs) is kept unless
-# -Purge is passed, because the crash history is usually the reason to keep it.
+# removes the package from the profile, and strips the mount block from the
+# profile patch. The state directory (snapshots, crash records, logs) is kept
+# unless -Purge is passed, because the crash history is usually the reason to
+# keep it.
 #
 # Usage:
-#   pwsh -File uninstall-guard.ps1                 # unmount, keep state
-#   pwsh -File uninstall-guard.ps1 -Purge          # also delete the state directory
-#   pwsh -File uninstall-guard.ps1 -StateDir D:\x  # explicit state directory
+#   powershell -File uninstall-guard.ps1                 # unmount, keep state
+#   powershell -File uninstall-guard.ps1 -Purge          # also delete the state directory
+#   powershell -File uninstall-guard.ps1 -StateDir D:\x  # explicit state directory
 param(
     [string]$Profile = 'web',
     [string]$DshHome = (Join-Path $env:USERPROFILE '.dsh'),
@@ -69,45 +70,29 @@ if (Test-Path $target) {
     Write-Output "removed: $target"
 }
 
-# --- 4. strip the mount block ----------------------------------------------
+# --- 4. strip the patch -----------------------------------------------------
+#
+# All of this file surgery lives in ONE place: bin/patch-guard.mjs. Both installers
+# used to carry their own copy of the same string manipulation, and both copies were
+# wrong in different ways: they left the comment preamble behind, left an "- insert:"
+# parent with no children, and - because consuming the BEGIN marker made a second run
+# blind to the region - could no longer clean up what they had written.
+$patchEditor = Join-Path $PSScriptRoot 'bin\patch-guard.mjs'
+
 if (Test-Path $patchPath) {
-    $beginMarker = '>>> dsh-guard managed block'
-    $endMarker = '<<< dsh-guard managed block'
-    $content = Read-Text $patchPath
-    if ($content.Contains($beginMarker) -or $content -match "name:\s*'dsh\-guard'") {
-        $kept = New-Object System.Collections.Generic.List[string]
-        $skippingBlock = $false   # inside the managed markers
-        $droppingRow = $false     # inside a hand-written dsh-guard insert row
-        foreach ($line in ($content -split "`r?`n")) {
-            if (-not $skippingBlock -and $line.Contains($beginMarker)) { $skippingBlock = $true; continue }
-            if ($skippingBlock) {
-                if ($line.Contains($endMarker)) { $skippingBlock = $false }
-                continue
-            }
-            if (-not $droppingRow -and $line -match "name:\s*'dsh\-guard'") {
-                # Drop the sibling `- id: guard` line that precedes the name.
-                $droppingRow = $true
-                $last = $kept.Count - 1
-                if ($last -ge 0 -and $kept[$last] -match '^\s*-\s*id:\s*guard\s*$') { $kept.RemoveAt($last) }
-                continue
-            }
-            if ($droppingRow) {
-                if ($line.Trim().Length -eq 0 -or $line -match '^\s{4,}\S') { continue }
-                $droppingRow = $false
-            }
-            $kept.Add($line)
-        }
+    if (-not (Test-Path $patchEditor)) {
+        Write-Output "cannot clean the patch: $patchEditor is missing"
+    } else {
         $backup = "$patchPath.bak-$(Get-Date -Format yyyyMMdd-HHmmss)"
         try {
             Copy-Item $patchPath $backup -Force -ErrorAction Stop
-            Write-Text $patchPath (($kept -join "`n").TrimEnd() + "`n")
-            Write-Output "patch cleaned (backup: $backup)"
+            $result = & node $patchEditor --patch $patchPath --remove 2>&1
+            Write-Output ($result -join ' ')
+            Write-Output "backup: $backup"
         } catch {
             Write-Output "could not rewrite the patch: $($_.Exception.Message)"
             Write-Output "run this script again with write access to $profileDir"
         }
-    } else {
-        Write-Output 'patch has no dsh-guard row'
     }
 }
 

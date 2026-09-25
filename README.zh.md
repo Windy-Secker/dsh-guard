@@ -137,7 +137,25 @@ powershell -ExecutionPolicy Bypass -File .\install-guard.ps1
 
 ### 退出按钮
 
-浏览器半边通过 `ctx.slots.register({ name: 'sidebar.footer.action' })` 注册进
+浏览器半边是通过 `dsh.client` 清单发布的**客户端 bundle**：包在 `package.json` 里声明
+`dsh.client.platform = "web"` 与 `exports["./client"]`，宿主把那个文件**原样**交给
+`/plugins` 的 combo 路由，浏览器端的内核要求 bundle **自己**在
+`window.__ModuleLoader__.load({ id, factory })` 里注册工厂。
+
+⚠️ 这里有个容易致命的区别：**`dsh.client` bundle 不是动态包**。动态包（`tool-cordis`
+那套）是一个 `return { name, inject, apply }` 的闭包体，由 runner 求值；而 `dsh.client`
+bundle 必须自己注册工厂。写错格式的后果不是"按钮不出现"，而是**整个页面起不来**：
+
+```
+Failed to load plugins
+bundle /plugins/??...dsh-guard/client.js&rev=... loaded without registering "..." via __ModuleLoader__.load
+```
+
+因为 combo 脚本是 boot 批次的一部分，一个没注册的成员会让整批导入失败。
+`test/client-bundle.test.mjs` 复刻了内核的两条判据（"注册了吗" / "工厂返回的能挂载吗"）
+外加"只能 require 平台种子模块"，专门看住这个坑。
+
+插件然后通过 `ctx.slots.register({ name: 'sidebar.footer.action' })` 注册进
 侧边栏底部「设置」旁边那一格（`sidebar.footer.action` 是侧边栏明确声明给
 「设置旁的操作」的槽位）。点两下才退：第一下进入「再点一次退出」的确认态，3 秒后自动取消。
 
@@ -245,12 +263,22 @@ powershell -ExecutionPolicy Bypass -File .\install-guard.ps1
 ## 七、自检与测试
 
 ```powershell
+node test/patch-guard.test.mjs     # profile patch 编辑器：幂等安装/卸载、不被别的插件误伤
+node test/client-bundle.test.mjs   # 客户端 bundle 契约：注册工厂、只 require 种子模块
 node test/snapshot.test.mjs        # 快照折叠、resume 简报、配置解析
 node test/watchdog-policy.test.mjs # 重启判定、端口预检、启动配方读取
-node test/check-patch.mjs "$env:USERPROFILE\.dsh\profiles\web\cordis.patch.yml"
-node test/quit-e2e.mjs             # 端点级验证：见下
-.\install-guard.ps1 -Test          # 前三个一起跑
+node test/check-patch.mjs <patch>  # 静态检查：dsh-guard 只挂一次、配置项类型正确
+node test/quit-e2e.mjs             # 端点级验证：在临时 DSH_HOME 里起一次性 dsh
+.\install-guard.ps1 -Test          # 以上全部（会启动一个一次性 dsh）
 ```
+
+patch 的手术刀只有一把：`bin/patch-guard.mjs`。安装器与卸载器都调用它，
+不再各自维护一份字符串处理 —— 之前两份互相独立、各自错在不同地方
+（留下注释前言、留下没有子项的 `- insert:`、以及因为吃掉了 BEGIN 标记导致第二次运行
+根本认不出那块区域），所以才会在一个 profile 里堆出四份重复注释和两个空 insert。
+
+**加插件进 patch 前的退路**：这个工具会先备份 `cordis.patch.yml.bak-<时间戳>`。
+手工改坏了就从备份恢复，或 `node bin/patch-guard.mjs --patch <file> --remove` 一键清干净。
 
 `test/quit-e2e.mjs` 是唯一会真的启动 dsh 的测试，但它**完全隔离**：在系统临时目录里
 造一个自己的 `DSH_HOME`、自己的 profile、自己的端口和状态目录，把本包 junction（或复制）

@@ -215,6 +215,25 @@ try {
 	step(status.watchdog?.status === "running", "watchdog spawned", JSON.stringify(status.watchdog));
 	const watchdogPid = typeof status.watchdog?.pid === "number" ? status.watchdog.pid : null;
 
+	// What the host will serve as the client bundle must be a registering bundle.
+	//
+	// The host serves `exports["./client"]` VERBATIM (client-modules snapshots the
+	// file and hands the bytes to the combo route), so the wire content is exactly
+	// these file bytes — asserting on the file is asserting on the wire without
+	// needing the full browser composition. The bootstrap and combo routes are
+	// revision-addressed, so a test cannot guess their URLs, and the shell's index
+	// is behind the connection's auth gate in a throwaway instance; this is the
+	// deterministic check. `test/client-bundle.test.mjs` covers execution.
+	const manifest = JSON.parse(readFileSync(join(packageRoot, "package.json"), "utf8"));
+	const clientPath = join(packageRoot, manifest.exports["./client"]);
+	step(existsSync(clientPath), "the manifest's client bundle exists", clientPath);
+	step(manifest.dsh?.client?.platform === "web", "the package declares dsh.client.platform = web");
+	if (existsSync(clientPath)) {
+		const clientSource = readFileSync(clientPath, "utf8");
+		step(clientSource.includes("__ModuleLoader__.load"), "the served bundle registers a factory (kernel requirement)");
+		step(clientSource.includes('id: "dsh-guard"'), "the factory registers under the advertised package id");
+	}
+
 	const quit = await call(`http://127.0.0.1:${String(port)}/dsh-guard/quit`, "POST");
 	step(quit.status === 200 && quit.body?.quitting === true, "POST /dsh-guard/quit accepted", `HTTP ${String(quit.status)}`);
 

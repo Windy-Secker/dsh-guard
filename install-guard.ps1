@@ -57,7 +57,7 @@ $autostartScript = Join-Path $source 'guard-autostart.ps1'
 if ($Test) {
     Push-Location $source
     try {
-        foreach ($suite in @('snapshot.test.mjs', 'watchdog-policy.test.mjs')) {
+        foreach ($suite in @('patch-guard.test.mjs', 'client-bundle.test.mjs', 'snapshot.test.mjs', 'watchdog-policy.test.mjs')) {
             Write-Output "--- $suite"
             & node (Join-Path $source "test\$suite")
             if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
@@ -111,56 +111,17 @@ if (-not $useLink) {
 # ---------------------------------------------------------------------------
 # 2. Mount it in the profile patch, exactly once.
 #
-# The managed region is delimited by explicit BEGIN/END markers rather than
-# inferred from indentation: the first version of this installer guessed where
-# the block ended, guessed wrong, and left the profile mounting dsh-guard twice.
-# A marker cannot be guessed wrong.
+# All of the file surgery lives in ONE tested place: bin/patch-guard.mjs. Both
+# installers previously carried their own copy of the same string manipulation and
+# both were wrong differently (leftover comment preamble, orphaned "- insert:"
+# parents, a second run blind to the region). Two bug-for-bug copies was the real
+# root cause, so there is now exactly one implementation.
 # ---------------------------------------------------------------------------
-$beginMarker = '>>> dsh-guard managed block'
-$endMarker = '<<< dsh-guard managed block'
 
-# Keys a human is expected to tune. Their presence outside the managed block
+# Keys a human is expected to tune. Their presence in a row our markers do NOT own
 # means the row was customized by hand and must not be silently rebuilt.
-$handEdited = @('stateDir', 'watchdog', 'autoResume', 'restartDelayMs', 'maxRestarts', 'crashWindowMs', 'resumePrompt', 'keepSessions')
-
-function Remove-ManagedBlock {
-    param([string]$Content)
-    $kept = New-Object System.Collections.Generic.List[string]
-    $skipping = $false
-    foreach ($line in ($Content -split "`r?`n")) {
-        if (-not $skipping -and $line.Contains($beginMarker)) { $skipping = $true; continue }
-        if ($skipping) {
-            if ($line.Contains($endMarker)) { $skipping = $false }
-            continue
-        }
-        $kept.Add($line)
-    }
-    return (($kept -join "`n").TrimEnd() + "`n")
-}
-
-# Remove a mount row that predates the markers (written by an older version of
-# this installer, or by hand). -ResetPatch needs this: without it the reset
-# appends the managed block NEXT TO the legacy rows, and the profile ends up
-# mounting dsh-guard two or three times - which is exactly what happened once.
-function Remove-LegacyRows {
-    param([string]$Content)
-    $kept = New-Object System.Collections.Generic.List[string]
-    $droppingRow = $false
-    foreach ($line in ($Content -split "`r?`n")) {
-        if (-not $droppingRow -and $line -match "name:\s*'dsh\-guard'\s*$") {
-            $droppingRow = $true
-            $last = $kept.Count - 1
-            if ($last -ge 0 -and $kept[$last] -match '^\s*-\s*id:\s*guard\s*$') { $kept.RemoveAt($last) }
-            continue
-        }
-        if ($droppingRow) {
-            if ($line.Trim().Length -eq 0 -or $line -match '^\s{4,}\S') { continue }
-            $droppingRow = $false
-        }
-        $kept.Add($line)
-    }
-    return (($kept -join "`n").TrimEnd() + "`n")
-}
+$handEdited = @('stateDir', 'watchdog', 'autoResume', 'restartDelayMs', 'maxRestarts', 'crashWindowMs', 'rapidDeathMs', 'maxRapidRestarts', 'portConflict', 'resumePrompt', 'keepSessions')
+$patchEditor = Join-Path $source 'bin\patch-guard.mjs'
 
 if ($FilesOnly) {
     Write-Output ''
@@ -170,10 +131,10 @@ if ($FilesOnly) {
     if (-not (Test-Path $patchPath)) { throw "profile patch not found at $patchPath" }
     $snippetPath = Join-Path $source 'cordis.patch.snippet.yml'
     if (-not (Test-Path $snippetPath)) { throw "patch template not found at $snippetPath" }
-    $snippet = (Read-Text $snippetPath).TrimEnd()
+    if (-not (Test-Path $patchEditor)) { throw "patch editor not found at $patchEditor" }
 
     $content = Read-Text $patchPath
-    $mounted = $content.Contains($beginMarker)
+    $mounted = $content.Contains('>>> dsh-guard managed block')
     $mentioned = $content -match "name:\s*'dsh\-guard'"
 
     # A hand-written row (outside our markers) wins: report it instead of
@@ -199,22 +160,12 @@ if ($FilesOnly) {
         if ($customized.Count -gt 0) { Write-Output "  (it carries hand-written settings: $($customized -join ', '))" }
         Write-Output 'The code is in place - just restart dsh. Use -ResetPatch to replace that row with the managed block.'
     } else {
-        # Strip the managed block first, then any legacy rows it may coexist with,
-        # so exactly one mount row survives no matter what the file looked like.
-        $body = Remove-ManagedBlock -Content $content
-        $legacy = 0
-        if ($body -match "name:\s*'dsh\-guard'") {
-            $legacy = ([regex]::Matches($body, "name:\s*'dsh\-guard'\s*$", 'Multiline')).Count
-            $body = Remove-LegacyRows -Content $body
-        }
-        if ($body.Trim() -eq '[]') { $body = '' }
         $backup = "$patchPath.bak-$(Get-Date -Format yyyyMMdd-HHmmss)"
         Copy-Item $patchPath $backup -Force
-        $next = ($body.TrimEnd() + "`n`n" + $snippet + "`n").TrimStart("`n")
-        Write-Text $patchPath $next
+        $result = & node $patchEditor --patch $patchPath --install --snippet $snippetPath 2>&1
+        Write-Output ($result -join ' ')
         if ($mounted) { Write-Output "patch refreshed (managed block replaced): $patchPath" }
         else { Write-Output "patch updated (dsh-guard mounted): $patchPath" }
-        if ($legacy -gt 0) { Write-Output "also removed $legacy legacy dsh-guard row(s) that predated the markers" }
         Write-Output "backup: $backup"
     }
 }
