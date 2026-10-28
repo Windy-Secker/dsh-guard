@@ -23,7 +23,7 @@
  * Standalone by design: no imports from the dsh installation, only node builtins.
  * Run it by hand for a foreground session:
  *
- *   node bin/watchdog.mjs --state-dir ~/.dsh/guard --foreground
+ *   node bin/watchdog.mjs --state-dir "$DSH_HOME/guard" --foreground
  *
  * @module dsh-guard/watchdog
  */
