@@ -528,25 +528,24 @@ export async function runWatchdog(options) {
 
 		// -- preflight: never spawn a dsh that cannot possibly bind --------------
 		//
-		// Without this the watchdog happily restarted a dsh that was still alive:
-		// the plugin mounts into a running process on a live profile reload, its
-		// spawn intent fires, and the replacement dies at boot with EADDRINUSE.
-		// The restart loop then produced a new doomed process every few seconds.
+		// Two failure modes shaped this check. Spawning while the guarded dsh was
+		// still alive produced an EADDRINUSE loop (a doomed replacement every few
+		// seconds). Spawning when ANOTHER live guard already serves the port is the
+		// same waste: the replacement cannot bind, and the existing instance is
+		// already doing the job. Any guard answering on our recorded port means this
+		// watchdog is redundant — it stands down and leaves the incumbent alone.
+		// (This is also what a manual restart produces: the old watchdog wakes up
+		// after its parent died and finds the user's fresh dsh serving.)
 		if (invocation.port !== null) {
 			const serving = await readGuardStatus(invocation.port);
 			const incumbentPid = options.parentPid ?? readJson(join(stateDir, INSTANCE))?.pid ?? null;
 			if (serving !== undefined) {
-				if (serving.pid === incumbentPid) {
-					log(
-						`pid ${String(serving.pid)} is already serving ${String(invocation.port)} with a live guard; nothing to restart — standing down`,
-					);
-					rmSync(pidFile, { force: true });
-					rmSync(join(stateDir, HALT), { force: true });
-					return;
-				}
 				log(
-					`port ${String(invocation.port)} is served by guard pid ${String(serving.pid)}, not the guarded pid ${String(incumbentPid)}`,
+					`port ${String(invocation.port)} is already served by live guard pid ${String(serving.pid)} (guarded pid was ${String(incumbentPid)}); standing down`,
 				);
+				rmSync(pidFile, { force: true });
+				rmSync(join(stateDir, HALT), { force: true });
+				return;
 			}
 			if (!(await portBindable(invocation.port))) {
 				const halt = {
