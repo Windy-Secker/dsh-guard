@@ -82,3 +82,10 @@ Honest limits: the plugin shares fate with the process it guards, so a safety-ne
 scheduled task (installed by the installer) is what brings the watchdog back if
 both die; that task only runs while you are logged in, and the Windows
 Application-log forensics needs `pwsh`.
+
+The safety-net task is **silent**. A Scheduled Task whose action is
+`powershell.exe` is a console program, so Windows shows a black window on every
+tick — every two minutes, forever, which is exactly the kind of interruption this
+tool is supposed to prevent. The action is `wscript.exe //B //Nologo
+guard-autostart.vbs` instead: wscript has no console, and it starts PowerShell with
+a hidden window. The installer generates that `.vbs` under `<DshHome>\guard\`.

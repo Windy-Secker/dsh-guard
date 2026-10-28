@@ -22,7 +22,7 @@
 | 安装器 | `install-guard.ps1` | 装进 profile（默认 junction 链接）、改 profile patch、装计划任务 |
 | 卸载器 | `uninstall-guard.ps1` | 停看门狗、删计划任务、摘插件、还原 patch |
 | 状态查看 | `guard-status.ps1` | 只读报表：进程、上次死因、任务快照 |
-| 兜底拉起 | `guard-autostart.ps1` | 计划任务每 2 分钟跑一次：dsh 和看门狗都没了时把看门狗拉回来 |
+| 兜底拉起 | `guard-autostart.vbs` + `guard-autostart.ps1` | 计划任务每 2 分钟**静默**跑一次：dsh 和看门狗都没了时把看门狗拉回来（经 `wscript` 启动，不弹黑框） |
 
 状态目录默认 `$DSH_HOME/guard`；`DSH_HOME` 未设置时退回 `%USERPROFILE%\.dsh\guard`
 （这台机器目前是 `E:\dsh\app\home\guard`）。**一律以 `DSH_HOME` 为准，不要写死家目录**：
@@ -282,6 +282,12 @@ bundle /plugins/??...dsh-guard/client.js&rev=... loaded without registering "...
   改 patch 会把插件挂进**当前**进程。此时看门狗启动前会先探测端口，发现「记录里的 pid
   仍在提供守卫服务」就直接退出，不会去拉起第二个 dsh。（这条是实测踩出来的：
   早期版本在这里会不断生成 `EADDRINUSE` 的僵尸进程。）
+
+- **兜底计划任务是静默的，不会每 2 分钟弹一个黑框。** 计划任务的 action 如果是
+  `powershell.exe`，Windows 会为它开一个可见的控制台窗口 —— 每两分钟闪一下，非常打断人。
+  所以 action 现在是 `wscript.exe //B //Nologo guard-autostart.vbs`：wscript 是 GUI 子系统、
+  没有控制台，再由它用 `shell.Run(..., 0, False)` 以隐藏窗口启动 PowerShell。
+  那个 `.vbs` 由安装器生成到 `<DshHome>\guard\`，源码里只放带 `@@` 占位符的模板。
 
 ---
 

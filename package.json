@@ -26,6 +26,7 @@
     "install-guard.ps1",
     "uninstall-guard.ps1",
     "guard-autostart.ps1",
+    "guard-autostart.vbs",
     "guard-status.ps1",
     "cordis.patch.snippet.yml",
     "cordis.patch.entry.txt",

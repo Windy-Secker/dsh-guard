@@ -178,6 +178,12 @@ if ($FilesOnly) {
 
 # ---------------------------------------------------------------------------
 # 3. The external safety net: a scheduled task that resurrects a dead watchdog.
+#
+# The task must be INVISIBLE. A Scheduled Task whose action is powershell.exe is a
+# console program, so Windows flashes a black window on every tick — which interrupts
+# whatever the person is doing, every couple of minutes, forever. The action is
+# therefore wscript.exe running a generated .vbs: wscript has no console, and it
+# starts PowerShell with SW_HIDE.
 # ---------------------------------------------------------------------------
 if ($NoAutoStart) {
     Write-Output ''
@@ -186,12 +192,34 @@ if ($NoAutoStart) {
     Write-Output ''
     Write-Output "autostart script missing at $autostartScript; skipped"
 } else {
-    # Register the task against the PowerShell that is running this script, so it
-    # works whether that is powershell.exe (5.1) or pwsh (7+).
-    $hostExe = [System.Diagnostics.Process]::GetCurrentProcess().MainModule.FileName
-    $action = New-ScheduledTaskAction -Execute $hostExe `
-        -Argument "-NoProfile -NonInteractive -ExecutionPolicy Bypass -File `"$autostartScript`" -DshHome `"$DshHome`"" `
-        -WorkingDirectory $source
+    # Generate the silent launcher under the state directory (not in the source
+    # tree, so a checkout stays clean).
+    $vbsTemplate = Join-Path $source 'guard-autostart.vbs'
+    $vbsPath = Join-Path (Join-Path $DshHome 'guard') 'guard-autostart.vbs'
+    if (Test-Path $vbsTemplate) {
+        New-Item -ItemType Directory -Path (Split-Path $vbsPath -Parent) -Force | Out-Null
+        $vbs = Read-Text $vbsTemplate
+        $vbs = $vbs.Replace('@@SCRIPT@@', $autostartScript).Replace('@@DSH_HOME@@', $DshHome)
+        Write-Text $vbsPath $vbs
+        Write-Output "silent launcher: $vbsPath"
+    } else {
+        Write-Output "silent launcher template missing at $vbsTemplate; falling back to a visible window"
+        $vbsPath = $null
+    }
+
+    $wscript = Join-Path $env:SystemRoot 'System32\wscript.exe'
+    if ($null -ne $vbsPath -and (Test-Path $wscript)) {
+        # //B = batch mode (no dialogs), //Nologo = no banner.
+        $action = New-ScheduledTaskAction -Execute $wscript `
+            -Argument "//B //Nologo `"$vbsPath`"" `
+            -WorkingDirectory $source
+    } else {
+        # Last resort: the old visible behaviour, so the safety net still exists.
+        $hostExe = [System.Diagnostics.Process]::GetCurrentProcess().MainModule.FileName
+        $action = New-ScheduledTaskAction -Execute $hostExe `
+            -Argument "-NoProfile -NonInteractive -ExecutionPolicy Bypass -File `"$autostartScript`" -DshHome `"$DshHome`"" `
+            -WorkingDirectory $source
+    }
     $trigger = New-ScheduledTaskTrigger -Once -At (Get-Date).AddMinutes(2) `
         -RepetitionInterval (New-TimeSpan -Minutes 2)
     $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries `
@@ -200,7 +228,7 @@ if ($NoAutoStart) {
     try {
         Register-ScheduledTask -TaskName $taskName -Action $action -Trigger $trigger -Settings $settings `
             -Principal $principal -Force `
-            -Description 'dsh-guard: restart the dsh watchdog when both dsh and its watchdog are gone.' | Out-Null
+            -Description 'dsh-guard: restart the dsh watchdog when both dsh and its watchdog are gone (runs hidden).' | Out-Null
         Write-Output "scheduled task installed: $taskName (every 2 minutes, via $hostExe)"
     } catch {
         Write-Output "could not install the scheduled task: $($_.Exception.Message)"
