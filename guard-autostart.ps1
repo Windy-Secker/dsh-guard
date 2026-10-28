@@ -17,7 +17,7 @@
 #   pwsh -File guard-autostart.ps1            # one pass (what the task runs)
 #   pwsh -File guard-autostart.ps1 -Verbose   # one pass, report every instance
 param(
-    [string]$DshHome = (Join-Path $env:USERPROFILE '.dsh'),
+    [string]$DshHome = $(if ($env:DSH_HOME) { $env:DSH_HOME } else { Join-Path $env:USERPROFILE '.dsh' }),
     [string]$StateDir = '',
     # An instance record older than this is treated as abandoned: the plugin
     # refreshes it every 30 seconds while dsh is alive, so a stale record means

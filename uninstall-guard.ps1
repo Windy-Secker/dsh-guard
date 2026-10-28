@@ -12,7 +12,7 @@
 #   powershell -File uninstall-guard.ps1 -StateDir D:\x  # explicit state directory
 param(
     [string]$Profile = 'web',
-    [string]$DshHome = (Join-Path $env:USERPROFILE '.dsh'),
+    [string]$DshHome = $(if ($env:DSH_HOME) { $env:DSH_HOME } else { Join-Path $env:USERPROFILE '.dsh' }),
     [string]$StateDir = '',
     [switch]$Purge,
     [switch]$KeepTask

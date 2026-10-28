@@ -24,7 +24,9 @@
 | 状态查看 | `guard-status.ps1` | 只读报表：进程、上次死因、任务快照 |
 | 兜底拉起 | `guard-autostart.ps1` | 计划任务每 2 分钟跑一次：dsh 和看门狗都没了时把看门狗拉回来 |
 
-状态目录默认 `%USERPROFILE%\.dsh\guard`（即 `$DSH_HOME/guard`）：
+状态目录默认 `$DSH_HOME/guard`；`DSH_HOME` 未设置时退回 `%USERPROFILE%\.dsh\guard`
+（这台机器目前是 `E:\dsh\app\home\guard`）。**一律以 `DSH_HOME` 为准，不要写死家目录**：
+dsh 已经整体搬过一次，写死的老路径会在下次搬动后静默指向不存在的目录。
 
 ```
 instance.json        本次 dsh 的启动配方：execPath + argv + cwd + port（每 30 秒心跳刷新）

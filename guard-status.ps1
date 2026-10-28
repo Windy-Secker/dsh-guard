@@ -8,7 +8,7 @@
 #   powershell -File guard-status.ps1 -Resume     # also print the resume brief
 #   powershell -File guard-status.ps1 -Log        # also tail watchdog.log + crashes.log
 param(
-    [string]$DshHome = (Join-Path $env:USERPROFILE '.dsh'),
+    [string]$DshHome = $(if ($env:DSH_HOME) { $env:DSH_HOME } else { Join-Path $env:USERPROFILE '.dsh' }),
     [string]$StateDir = '',
     [switch]$Resume,
     [switch]$Log

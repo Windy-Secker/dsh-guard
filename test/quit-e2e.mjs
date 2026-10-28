@@ -43,14 +43,44 @@ const packageRoot = join(here, "..");
 
 const argv = process.argv.slice(2);
 const dshIndex = argv.indexOf("--dsh");
-const DSH_ENTRY =
-	dshIndex === -1
-		? join(process.env.APPDATA ?? "", "npm", "node_modules", "@deepseek-ai", "dsh", "lib", "bin.js")
-		: argv[dshIndex + 1];
 const keep = argv.includes("--keep");
 
-if (!existsSync(DSH_ENTRY)) {
-	console.error(`dsh entry not found at ${DSH_ENTRY}; pass --dsh <path to lib/bin.js>`);
+/**
+ * Resolve the dsh entry script.
+ *
+ * Deliberately not a hardcoded path. Where dsh is installed is a deployment
+ * detail that has already changed once on this machine (a global npm install
+ * under `%APPDATA%\npm` became a checkout at `E:\dsh\app\dsh`), and a test that
+ * names the old location fails for a reason that has nothing to do with the
+ * plugin. The stable anchor is the module farm dsh itself maintains inside
+ * DSH_HOME: `$DSH_HOME/profiles/node_modules/@deepseek-ai/dsh` is a junction to
+ * whichever installation is current, so it survives the next move too.
+ *
+ * @param explicit - `--dsh <path>` override, tried first.
+ * @returns the entry path and the list that was searched.
+ */
+function resolveDshEntry(explicit) {
+	const candidates = [];
+	if (explicit !== undefined) candidates.push(explicit);
+	if (process.env.DSH_NODE_MODULES !== undefined && process.env.DSH_NODE_MODULES !== "") {
+		candidates.push(join(process.env.DSH_NODE_MODULES, "@deepseek-ai", "dsh", "lib", "bin.js"));
+	}
+	if (process.env.DSH_HOME !== undefined && process.env.DSH_HOME !== "") {
+		candidates.push(join(process.env.DSH_HOME, "profiles", "node_modules", "@deepseek-ai", "dsh", "lib", "bin.js"));
+	}
+	// Legacy global install, still supported so this works on an unmoved machine.
+	const roaming = process.env.APPDATA ?? (process.env.USERPROFILE === undefined ? undefined : join(process.env.USERPROFILE, "AppData", "Roaming"));
+	if (roaming !== undefined) candidates.push(join(roaming, "npm", "node_modules", "@deepseek-ai", "dsh", "lib", "bin.js"));
+	return { entry: candidates.find((candidate) => existsSync(candidate)), candidates };
+}
+
+const resolved = resolveDshEntry(dshIndex === -1 ? undefined : argv[dshIndex + 1]);
+const DSH_ENTRY = resolved.entry;
+
+if (DSH_ENTRY === undefined) {
+	console.error("dsh entry not found. Searched:");
+	for (const candidate of resolved.candidates) console.error(`  ${candidate}`);
+	console.error("Pass --dsh <path to lib/bin.js>, or set DSH_NODE_MODULES.");
 	process.exit(2);
 }
 

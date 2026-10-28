@@ -1,8 +1,9 @@
 # dsh-guard：为 dsh Web GUI 提供「退出」按钮、崩溃取证、任务快照与独立看门狗。
 #
 # `stateDir` 是全部状态文件的落点（instance/status/snapshot/resume/crash/
-# crashes.log/dsh.log/watchdog.log）。默认 `$DSH_HOME/guard`，即
-# `C:\Users\<你>\.dsh\guard`。
+# crashes.log/dsh.log/watchdog.log）。默认 `$DSH_HOME/guard`（`DSH_HOME` 未设置时
+# 退回 `%USERPROFILE%\.dsh\guard`）。以 `DSH_HOME` 为准、不要写死家目录：
+# dsh 整体搬过一次，写死的老路径会在下次搬动后静默失效。
 #
 # `watchdog: true`（默认）会在 dsh 启动时拉起一个 detached 的独立进程，
 # 它拿着本次启动的完整命令行；dsh 被异常终止时由它重启，并按需要续跑。
