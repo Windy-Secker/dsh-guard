@@ -175,6 +175,18 @@ bundle /plugins/??...dsh-guard/client.js&rev=... loaded without registering "...
 插件启动时用 `spawn(..., { detached: true })` + `unref()` 起一个独立进程，
 并把本次的 `execPath + argv` 写进 `instance.json`。看门狗于是知道怎么原样重启 dsh。
 
+**它的起始状态是「观察」而不是「托管」**：看门狗是被它要守护的那个 dsh 拉起来的，
+所以启动时父进程必然活着、端口也已经在服务 —— 这是正常状态，不是冲突。
+
+1. 父进程活着 → 每 0.5 秒探一次，只等它退出（期间看到 `clean-exit`/`stop` 就自行退出）；
+2. 父进程退出 → 记一条「观察到的退出」取证（见下），然后才进入托管循环；
+3. 之后每次拉起子进程、等它退出、判定、按需重启。
+
+> 这一条是实测打脸改出来的：早期版本在启动时直接探测端口，看到「记录的 pid 正在服务」
+> 就以为「没什么可重启的」而**主动退出** —— 于是每一次正常启动都没有看门狗，
+> 第一次崩溃完全静默。而更早的版本则是反过来，启动就开一个子进程，造成 EADDRINUSE 死循环。
+> 正确模型只有这一个：**先观察父进程，父进程死了才接管**。
+
 之后它循环：起 dsh → 等它退出 → 判定：
 
 | 情况 | 判定 |
@@ -186,14 +198,18 @@ bundle /plugins/??...dsh-guard/client.js&rev=... loaded without registering "...
 | 重启出来的进程连续「刚起来就崩」 | 放弃并写 `watchdog-halt.json`，不再刷进程 |
 | 端口已被占用 / 新进程日志出现 `EADDRINUSE` | 立刻放弃，因为再拉起也只是重复同一次失败 |
 | 看门狗自己被顶替（`instance.json` 换了 pid）| 自行退出，避免两个看门狗抢着重启同一个 dsh |
+| 已经是「被重启出来的 dsh」再起一个看门狗 | 新看门狗发现 `watchdog.pid` 里的进程还活着 → **接管**，不重复起 |
 
 退避：正常间隔 `restartDelayMs`；存活不足 15 秒的崩溃按 4 倍退避（最高 20 秒）。
 
-> 关于「被守护的 dsh 第一次崩」这条：`expectedParentPid` 就是看门狗自己拉起的那个
-> 子进程，所以子进程一死，那个 pid 必然消失。**不能**用「父进程不在了」来判断自己成了孤儿
-> —— 那会把第一次真正的崩溃误判成「我是多余的看门狗」而白白浪费掉唯一一次重启机会
-> （这正是开发中踩过并修掉的坑）。孤儿看门狗由另外两条独立证据判定：`parentWatch`
-> 定时器（未开始守护 + 记录的实例已换 pid）与启动前的端口探测（端口上已有活着的守卫）。
+> 「接管」这条也是必须的：被重启出来的 dsh 自己也会起看门狗。若两边都认为自己该负责，
+> 下次崩溃就会同时拉起两个 dsh。所以插件启动时先看 `watchdog.pid`，活着就认领它。
+>
+> Windows 上还有个必须写进代码的细节：看门狗本身是 detached + stdio 忽略起的，
+> **没有控制台**；这样的进程再去起一个非 detached 的控制台程序，会以
+> `0xC0000142`（3221225794）在加载阶段直接死掉、连一行输出都没有。
+> 所以拉起 dsh 的那次 spawn 必须是 `detached: true`（给它自己的控制台），
+> 句柄仍在看门狗手里，`exit` 事件与 kill 都照常。
 
 ### 崩溃取证
 
@@ -204,6 +220,11 @@ bundle /plugins/??...dsh-guard/client.js&rev=... loaded without registering "...
   每次异常退出还会带上退出码、信号、存活时长、插件侧记录、以及 **Windows 应用日志**
   里同一时间窗内的 Application Error / Windows Error Reporting / .NET Runtime 事件 ——
   这是 OOM、访问违例、原生插件 abort 这类「静默死亡」唯一的外部证据。
+
+  被守护的 dsh **不是看门狗的子进程**（它是看门狗的父进程），所以它死时看门狗读不到退出码。
+  这种情况会写一份 **`observed: true`** 的记录：说明「观察到的退出」，并尽量附上插件侧
+  `crash.json`、`dsh.log` 尾部与同一时间窗的 Windows 事件。重启出来的子进程再死时，
+  记录里就有真实的 `exitCode` / `signal` 了。
 
 ### 任务快照
 
@@ -219,6 +240,8 @@ bundle /plugins/??...dsh-guard/client.js&rev=... loaded without registering "...
 > **快照从插件挂载那一刻开始记。** `session/event` 只投递**新**事件，插件不会回放
 > 挂载之前的会话历史，所以刚启用 dsh-guard 的那一轮，早先的 `todo/write` 不在快照里
 > —— 直到 agent 下一次调用 `todo_write`。要立刻拿到当前列表，让它重发一次或直接看会话日志。
+> （实测方式就是：挂载后调用一次 `todo_write`，`snapshot.json` 与 `resume.md` 里立刻出现
+> 带 `[x]/[→]/[ ]` 标记的完整列表，字段 `todoCounts` 同步更新。）
 
 > **为什么任务列表会丢？** 列表本身是会话日志里的 `todo/write` 事件，日志是持久的；
 > 但客户端侧投影在 `turn/start` 时被重置为 `null`，而崩溃时 agent 手上的那份内存状态也没了，
@@ -270,8 +293,9 @@ node test/client-bundle.test.mjs   # 客户端 bundle 契约：注册工厂、�
 node test/snapshot.test.mjs        # 快照折叠、resume 简报、配置解析
 node test/watchdog-policy.test.mjs # 重启判定、端口预检、启动配方读取
 node test/check-patch.mjs <patch>  # 静态检查：dsh-guard 只挂一次、配置项类型正确
-node test/quit-e2e.mjs             # 端点级验证：在临时 DSH_HOME 里起一次性 dsh
-.\install-guard.ps1 -Test          # 以上全部（会启动一个一次性 dsh）
+node test/quit-e2e.mjs             # 端点级：临时 DSH_HOME 里起一次性 dsh，验证退出全链路
+node test/crash-e2e.mjs            # 破坏性：强杀一次性 dsh 两次，验证看门狗重启与取证
+.\install-guard.ps1 -Test          # 以上全部（会启动并强杀一次性 dsh）
 ```
 
 patch 的手术刀只有一把：`bin/patch-guard.mjs`。安装器与卸载器都调用它，
@@ -282,16 +306,27 @@ patch 的手术刀只有一把：`bin/patch-guard.mjs`。安装器与卸载器�
 **加插件进 patch 前的退路**：这个工具会先备份 `cordis.patch.yml.bak-<时间戳>`。
 手工改坏了就从备份恢复，或 `node bin/patch-guard.mjs --patch <file> --remove` 一键清干净。
 
-`test/quit-e2e.mjs` 是唯一会真的启动 dsh 的测试，但它**完全隔离**：在系统临时目录里
-造一个自己的 `DSH_HOME`、自己的 profile、自己的端口和状态目录，把本包 junction（或复制）
-进那个 profile 的 `node_modules`，然后验证：
+两个测试会真的启动 dsh，但都**完全隔离**：在系统临时目录里造一个自己的 `DSH_HOME`、
+自己的 profile、自己的端口和状态目录，把本包 junction（或复制）进那个 profile 的
+`node_modules`，不读也不写你真实的 profile 与状态目录。
 
-1. 插件挂载、`/dsh-guard/status` 可读、看门狗已拉起；
-2. `POST /dsh-guard/quit` 返回 200 并写下 `clean-exit.json`；
-3. 进程**自己**以退出码 0 结束（是优雅 dispose，不是被 kill）；
-4. 看门狗看到标记后退出，没有第二个 dsh 被拉起。
+`test/quit-e2e.mjs`（正常退出）：
 
-它不读也不写你的真实 profile 与状态目录，所以在任何时候都能跑。
+1. 插件挂载、`/dsh-guard/status` 可读、看门狗拉起；
+2. **看门狗 2.5 秒后仍然活着**（这条断言是补上去的：早期它启动就自己退出，
+   而旧断言只查了内存里的 `watchdog.status`，于是整条重启功能是死的但测试全绿）；
+3. `POST /dsh-guard/quit` 返回 200 并写下 `clean-exit.json`；
+4. 进程**自己**以退出码 0 结束（优雅 dispose，不是被 kill）；
+5. 看门狗看到标记后退出，没有第二个 dsh 被拉起。
+
+`test/crash-e2e.mjs`（异常终止，破坏性）：
+
+1. 强杀被守护的 dsh → 看门狗记下「观察到的退出」并**换一个新 pid** 在同一端口拉起；
+2. 再强杀一次（这次死的是看门狗自己的子进程）→ 报告里有真实 `exitCode` / `signal`；
+3. 最后走一次正常退出 → 看门狗停手、清掉 `watchdog.pid`、**不再拉起任何进程**。
+
+这条测试就是发现「启动即退出」与「无控制台父进程拉不起子进程（0xC0000142）」两个
+致命缺陷的地方 —— 纯单元测试看不出来。
 
 排错顺序：
 

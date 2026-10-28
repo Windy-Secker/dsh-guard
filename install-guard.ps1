@@ -66,11 +66,17 @@ if ($Test) {
         & node (Join-Path $source 'test\check-patch.mjs') $patchPath
         if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
-        # The only suite that boots a dsh. It builds its own throwaway DSH_HOME,
+        # The first suite that boots a dsh. It builds its own throwaway DSH_HOME,
         # profile, port and state directory, so running it cannot disturb the
         # installation this script just touched.
         Write-Output '--- quit-e2e.mjs (isolated: starts a throwaway dsh)'
         & node (Join-Path $source 'test\quit-e2e.mjs')
+        if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+        # Destructive on purpose: force-kills the throwaway dsh twice and proves
+        # the watchdog replaces it both times, then stands down on a graceful quit.
+        Write-Output '--- crash-e2e.mjs (isolated: force-kills a throwaway dsh)'
+        & node (Join-Path $source 'test\crash-e2e.mjs')
     } finally { Pop-Location }
     exit $LASTEXITCODE
 }

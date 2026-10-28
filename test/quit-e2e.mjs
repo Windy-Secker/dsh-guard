@@ -245,6 +245,29 @@ try {
 	step(status.watchdog?.status === "running", "watchdog spawned", JSON.stringify(status.watchdog));
 	const watchdogPid = typeof status.watchdog?.pid === "number" ? status.watchdog.pid : null;
 
+	// Liveness, not the reported status. This is the assertion that was missing
+	// when the watchdog stood down at boot while `status.watchdog` still said
+	// "running" — the whole restart feature was dead and every check was green.
+	if (watchdogPid !== null) {
+		await new Promise((resolvePromise) => setTimeout(resolvePromise, 2500));
+		let alive = false;
+		try {
+			process.kill(watchdogPid, 0);
+			alive = true;
+		} catch (error) {
+			alive = error?.code === "EPERM";
+		}
+		step(alive, "the watchdog is still alive 2.5s after boot (it must not stand down)", `pid ${String(watchdogPid)}`);
+		const logText = (() => {
+			try {
+				return readFileSync(join(stateDir, "watchdog.log"), "utf8");
+			} catch {
+				return "";
+			}
+		})();
+		step(!/standing down/u.test(logText), "the watchdog log shows no stand-down at boot");
+	}
+
 	// What the host will serve as the client bundle must be a registering bundle.
 	//
 	// The host serves `exports["./client"]` VERBATIM (client-modules snapshots the

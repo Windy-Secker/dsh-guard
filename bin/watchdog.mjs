@@ -446,6 +446,77 @@ export async function runWatchdog(options) {
 	}, 5000);
 	parentWatch.unref?.();
 
+	// -- take over only after the guarded process is gone ---------------------
+	//
+	// The watchdog is spawned BY the dsh it guards, so at startup that process is
+	// alive and already serving its port. That is the NORMAL case, not a conflict.
+	// Two earlier designs got this wrong, and a real force-kill test caught the
+	// second one:
+	//   - spawning immediately produced an EADDRINUSE loop (a doomed replacement
+	//     per few seconds while the original was still serving);
+	//   - standing down when "the incumbent is serving" left EVERY normal boot
+	//     with no supervisor at all, so the first crash after a restart was silent.
+	// The correct rule: observe the parent, and start supervising when it dies.
+	const initialParent = options.parentPid ?? readJson(join(stateDir, INSTANCE))?.pid ?? null;
+	if (typeof initialParent === "number" && initialParent > 0 && isAlive(initialParent)) {
+		const instanceBefore = readJson(join(stateDir, INSTANCE));
+		log(`guarding live pid ${String(initialParent)}; waiting for it to exit before taking over`);
+		// A clean exit while we wait must END supervision rather than cause a
+		// restart: the Quit button writes its marker precisely so the guard stands
+		// down, and the wait loop must honour it like the supervised-child path does.
+		const quitRequested = () =>
+			readJson(join(stateDir, CLEAN_EXIT)) !== undefined || readJson(join(stateDir, STOP)) !== undefined;
+		while (!stopping && isAlive(initialParent)) {
+			if (quitRequested()) {
+				stop("guarded dsh exited cleanly");
+				return;
+			}
+			await new Promise((resolvePromise) => setTimeout(resolvePromise, 500));
+		}
+		if (stopping) return;
+		if (quitRequested()) {
+			stop("guarded dsh exited cleanly");
+			return;
+		}
+		log(`pid ${String(initialParent)} has exited; taking over`);
+		// From here this is a continuation of one supervision session, so the
+		// verdict must treat the dead parent as the failure being repaired.
+		supervising = true;
+
+		// Record the death we could not witness directly. This process was NOT our
+		// child, so there is no exit code and no signal to read; what remains is the
+		// plugin's own crash record (if it got the chance to write one) and the
+		// Windows application log around the moment it disappeared.
+		const startedMs = Date.parse(String(instanceBefore?.startedAt ?? ""));
+		const since = Number.isFinite(startedMs) ? startedMs : Date.now() - 600_000;
+		const observedCrash = {
+			schema: "dsh-guard/watchdog-crash@1",
+			at: now(),
+			reason: "被守护的 dsh 已退出（看门狗观察到的父进程，不是它的子进程，因此没有退出码）",
+			restart: true,
+			observed: true,
+			exitCode: null,
+			signal: null,
+			livedMs: Math.max(0, Date.now() - since),
+			pluginCrash: readJson(join(stateDir, "crash.json")) ?? null,
+			windowsEvents: windowsFatalEvents(since),
+			dshLogTail: tail(join(stateDir, DSH_LOG), 40),
+			crashLogTail: tail(join(stateDir, CRASH_LOG), 20),
+			invocation: {
+				execPath: instanceBefore?.execPath ?? null,
+				args: Array.isArray(instanceBefore?.args) ? instanceBefore.args : [],
+				cwd: instanceBefore?.cwd ?? null,
+			},
+		};
+		writeJson(join(stateDir, CRASH_REPORT), observedCrash);
+		appendFileSync(
+			join(stateDir, CRASH_LOG),
+			`${now()}\twatchdog\t${observedCrash.reason}\tobserved livedMs=${String(observedCrash.livedMs)}\n`,
+			"utf8",
+		);
+		log(`recorded the observed exit in ${CRASH_REPORT}`);
+	}
+
 	for (;;) {
 		const invocation = readInvocation(stateDir);
 		if (invocation === undefined) {
@@ -541,7 +612,15 @@ export async function runWatchdog(options) {
 			cwd: invocation.cwd,
 			env: process.env,
 			stdio: ["ignore", out, out],
-			windowsHide: false,
+			// `detached: true` is REQUIRED here, not cosmetic. The watchdog is itself
+			// started detached with stdio ignored, so it has no console; on Windows a
+			// console-less process launching a NON-detached console program fails at
+			// load time with 0xC0000142 (exit code 3221225794) before Node can print
+			// anything. A force-kill test found every replacement dying in ~40ms with
+			// no output for exactly this reason. Detaching gives the child its own
+			// console; the watchdog still holds the handle, so 'exit' and kill() work.
+			detached: true,
+			windowsHide: true,
 		});
 		if (out !== "ignore") {
 			try {

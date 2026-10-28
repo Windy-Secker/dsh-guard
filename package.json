@@ -36,7 +36,9 @@
   ],
   "scripts": {
     "test": "node test/patch-guard.test.mjs && node test/client-bundle.test.mjs && node test/snapshot.test.mjs && node test/watchdog-policy.test.mjs && node test/check-patch.mjs",
-    "status": "powershell -NoProfile -ExecutionPolicy Bypass -File guard-status.ps1"
+    "status": "powershell -NoProfile -ExecutionPolicy Bypass -File guard-status.ps1",
+    "test:crash": "node test/crash-e2e.mjs",
+    "test:quit": "node test/quit-e2e.mjs"
   },
   "dsh": {
     "client": {

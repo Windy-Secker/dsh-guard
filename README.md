@@ -59,10 +59,19 @@ install/remove), `node test/client-bundle.test.mjs` (the served bundle must
 register a factory on `window.__ModuleLoader__` and may only require platform
 seed modules), `node test/snapshot.test.mjs`, `node test/watchdog-policy.test.mjs`,
 `node test/check-patch.mjs <patch>`, or `.\install-guard.ps1 -Test` for all of
-those. `node test/quit-e2e.mjs` additionally boots a throwaway dsh in an isolated
-`DSH_HOME` and proves the whole Quit path: status route, the served client bundle
-registers, quit accepted, `clean-exit.json` written, exit code 0, watchdog stands
-down.
+those. Two suites boot a throwaway dsh in an isolated `DSH_HOME`:
+`node test/quit-e2e.mjs` proves the graceful path (status route, the served
+client bundle registers, the watchdog is still ALIVE seconds after boot, quit
+accepted, `clean-exit.json` written, exit code 0, watchdog stands down), and
+`node test/crash-e2e.mjs` proves the rest: force-kill twice, a replacement dsh
+appears on the same port both times with a crash report, then a graceful quit
+stops supervision.
+
+Watchdog lifecycle, in one line: it is started by the dsh it guards, so it
+**waits for that process to exit** and only then takes over — spawning earlier
+causes EADDRINUSE loops, standing down instead leaves every normal boot with no
+supervisor. A replacement dsh adopts the already-running watchdog rather than
+starting a second one.
 
 All profile-patch editing goes through one helper, `bin/patch-guard.mjs`. The
 installer and uninstaller used to carry separate copies of that string surgery and
