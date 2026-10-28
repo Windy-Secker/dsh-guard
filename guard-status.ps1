@@ -21,9 +21,13 @@ function Read-Json([string]$Path) {
     if (-not (Test-Path $Path)) { return $null }
     try { return (Get-Content -Path $Path -Raw -Encoding UTF8 | ConvertFrom-Json) } catch { return $null }
 }
-function Test-Pid([object]$Pid) {
+# The parameter must NOT be named $Pid: PowerShell already defines $PID as a
+# read-only automatic variable, and binding a function parameter to a read-only
+# name throws at call time. The same bug existed here and in guard-autostart.ps1;
+# its symptom is a liveness check that silently reports every process as gone.
+function Test-Pid([object]$ProcessId) {
     $value = 0
-    if ($null -eq $Pid -or -not [int]::TryParse([string]$Pid, [ref]$value) -or $value -le 0) { return $false }
+    if ($null -eq $ProcessId -or -not [int]::TryParse([string]$ProcessId, [ref]$value) -or $value -le 0) { return $false }
     return $null -ne (Get-Process -Id $value -ErrorAction SilentlyContinue)
 }
 function Stamp([object]$Iso) {
