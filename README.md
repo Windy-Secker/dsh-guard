@@ -73,6 +73,18 @@ causes EADDRINUSE loops, standing down instead leaves every normal boot with no
 supervisor. A replacement dsh adopts the already-running watchdog rather than
 starting a second one.
 
+A restarted dsh runs inside a real console on purpose. A console-less process
+does not merely lack a window: every console child it starts gets a *new* console
+window, so each of dsh's background-job children popped a black box. The watchdog
+therefore asks PowerShell for a console and runs `bin/console-host.mjs` inside it;
+the host runs dsh as its child (which inherits the console), tees dsh's output to
+the window and to `dsh.log`, and reports the real exit code in
+`dsh.log.exit.json`. `restartWindow: visible` (default) shows that window;
+`hidden` keeps it off screen while preserving the console.
+
+`restore-normal.ps1` is the emergency exit for testing: it stops the watchdog so
+nothing races for the port, then starts dsh the ordinary way in a visible window.
+
 All profile-patch editing goes through one helper, `bin/patch-guard.mjs`. The
 installer and uninstaller used to carry separate copies of that string surgery and
 both were wrong differently, so a profile accumulated duplicate comment blocks and

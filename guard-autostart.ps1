@@ -136,7 +136,8 @@ foreach ($dir in $stateDirs) {
         '--window-ms', '600000',
         '--port-conflict', $PortConflict,
         '--rapid-death-ms', '3000',
-        '--max-rapid-restarts', '3'
+        '--max-rapid-restarts', '3',
+        '--restart-window', 'visible'
     ) -join ' '
     try {
         if ($DryRun) {

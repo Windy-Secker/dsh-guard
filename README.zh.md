@@ -22,6 +22,7 @@
 | 安装器 | `install-guard.ps1` | 装进 profile（默认 junction 链接）、改 profile patch、装计划任务 |
 | 卸载器 | `uninstall-guard.ps1` | 停看门狗、删计划任务、摘插件、还原 patch |
 | 状态查看 | `guard-status.ps1` | 只读报表：进程、上次死因、任务快照 |
+| 应急恢复 | `restore-normal.ps1` | 测试或崩溃把 dsh 弄没了时用：停掉看门狗（防抢端口），再以普通可见窗口重新启动 dsh |
 | 兜底拉起 | `guard-autostart.vbs` + `guard-autostart.ps1` | 计划任务每 2 分钟**静默**跑一次：dsh 和看门狗都没了时把看门狗拉回来（经 `wscript` 启动，不弹黑框） |
 
 状态目录默认 `$DSH_HOME/guard`；`DSH_HOME` 未设置时退回 `%USERPROFILE%\.dsh\guard`
@@ -104,6 +105,7 @@ powershell -ExecutionPolicy Bypass -File .\install-guard.ps1
         rapidDeathMs: 3000    # 存活不足这个时间算「刚起来就崩」
         maxRapidRestarts: 3   # 连续几次「刚起来就崩」后放弃重启
         portConflict: halt    # 端口被占：halt=停下诊断 / replace=杀掉占用者
+        restartWindow: visible # 重启后的 dsh 控制台窗口：visible 可见 / hidden 隐藏（都不会再弹后台任务黑框）
         tailEvents: 40        # 快照里保留多少条最近事件
         timeoutMs: 4000       # 优雅退出的兜底超时
         keepSessions: 12      # 保留多少份 per-session 快照
@@ -204,12 +206,32 @@ bundle /plugins/??...dsh-guard/client.js&rev=... loaded without registering "...
 
 > 「接管」这条也是必须的：被重启出来的 dsh 自己也会起看门狗。若两边都认为自己该负责，
 > 下次崩溃就会同时拉起两个 dsh。所以插件启动时先看 `watchdog.pid`，活着就认领它。
->
-> Windows 上还有个必须写进代码的细节：看门狗本身是 detached + stdio 忽略起的，
-> **没有控制台**；这样的进程再去起一个非 detached 的控制台程序，会以
-> `0xC0000142`（3221225794）在加载阶段直接死掉、连一行输出都没有。
-> 所以拉起 dsh 的那次 spawn 必须是 `detached: true`（给它自己的控制台），
-> 句柄仍在看门狗手里，`exit` 事件与 kill 都照常。
+
+### 重启后的 dsh 必须有一个控制台（`restartWindow`）
+
+Windows 上「没有控制台」不只是「没有窗口」：**一个无控制台的进程去起控制台子进程时，
+Windows 会给每个子进程分配一个全新的控制台窗口**。dsh 的每个后台任务都会起一个这样的子进程，
+所以看门狗用 detached（= 无控制台）拉起的 dsh 会表现为「每跑一个后台任务就弹一个黑框」，
+而它自己也没有窗口。
+
+修法是让重启出来的 dsh 活在一个真实控制台里，子进程就继承它、不再各自开窗口：
+
+- Node 本身创建不了控制台，所以由 **PowerShell** 创建（`-WindowStyle Normal` 可见 /
+  `Hidden` 不可见），再在里面跑 `bin/console-host.mjs`；
+- console-host 把 dsh 当子进程启动（继承该控制台），把 dsh 的输出**同时**写到窗口
+  （`CONOUT$`）与 `dsh.log` —— 窗口可见和崩溃日志两者都要保留；
+- 退出码写进 `dsh.log.exit.json`，因为 32 位崩溃码经过 PowerShell 转发可能被截断。
+
+配置项 `restartWindow`：
+
+| 值 | 行为 |
+| --- | --- |
+| `visible`（默认） | 重启后显示 dsh 的控制台窗口，窗口里能看到它的输出 |
+| `hidden` | 同样给 dsh 控制台，但窗口隐藏 —— 后台任务同样不再弹窗，只是看不见 |
+
+之前那版 `detached: true` 是必需的（否则无控制台的父进程拉起子进程会以 `0xC0000142`
+在加载阶段直接死掉），但它同时带来「子进程各自开控制台」的副作用 —— 现在由 console-host
+一次性解决：控制台存在、窗口按配置显示、日志照旧。
 
 ### 崩溃取证
 

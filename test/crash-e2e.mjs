@@ -161,6 +161,7 @@ try {
 			`        stateDir: '${stateDir.replace(/\\/gu, "/")}'`,
 			"        watchdog: true",
 			"        autoResume: false",
+            "        restartWindow: hidden",
 			"",
 		].join("\n"),
 		"utf8",
@@ -261,6 +262,21 @@ try {
 		`${String(report?.windowsEvents?.length ?? 0)} event(s)`,
 	);
 
+	// The restarted dsh now runs inside the console host. Its output must still
+	// reach dsh.log (the host tees it), otherwise the forensics promise is gone.
+	// The URL line is printed once the tree settles, which can be a moment after
+	// the status route starts answering — hence the wait.
+	const readDshLog = () => {
+		try {
+			return readFileSync(join(stateDir, "dsh.log"), "utf8");
+		} catch {
+			return "";
+		}
+	};
+	const teedUrl = await waitFor(() => (/dsh web: http/u.test(readDshLog()) ? true : undefined), 30_000);
+	step(teedUrl === true, "the console host teed dsh's output into dsh.log", teedUrl === true ? "" : `tail: ${readDshLog().slice(-200)}`);
+	step(/===== dsh-guard: console host/u.test(readDshLog()), "dsh.log records that a console host started it");
+
 	// ---------------------------------------------------------------------
 	// kill 2: recovery must not be a one-shot
 	// ---------------------------------------------------------------------
@@ -311,6 +327,16 @@ try {
 		"the watchdog stood down after the graceful quit",
 	);
 	dsh = null;
+
+	// ---------------------------------------------------------------------
+	// the console host must never litter the working directory
+	// ---------------------------------------------------------------------
+	// `openSync("CONOUT$")` with a bare name is NOT the console device: with no
+	// console attached CreateFile happily creates a FILE named `CONOUT$` in the
+	// cwd. The host must use `\\.\CONOUT$` and fail cleanly instead. The child
+	// dsh runs with cwd = packageRoot, so a regression drops the file right here
+	// — in the repo we are about to commit.
+	step(!existsSync(join(packageRoot, "CONOUT$")), "the console host left no CONOUT$ file behind");
 } catch (error) {
 	failures.push(error.message);
 	console.error(`error: ${error.message}`);

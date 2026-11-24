@@ -38,6 +38,7 @@
         rapidDeathMs: 3000
         maxRapidRestarts: 3
         portConflict: halt
+        restartWindow: visible   # visible=重启后显示控制台窗口；hidden=不显示
         tailEvents: 40
         timeoutMs: 4000
         keepSessions: 12

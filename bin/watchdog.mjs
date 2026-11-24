@@ -31,10 +31,8 @@
 import { spawn, spawnSync } from "node:child_process";
 import {
 	appendFileSync,
-	closeSync,
 	existsSync,
 	mkdirSync,
-	openSync,
 	readFileSync,
 	renameSync,
 	rmSync,
@@ -43,7 +41,7 @@ import {
 import { createConnection, createServer } from "node:net";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
-import { pathToFileURL } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 // ---------------------------------------------------------------------------
 // Arguments
@@ -62,6 +60,8 @@ export function parseArgs(argv) {
 		maxRestarts: 10,
 		windowMs: 600000,
 		portConflict: DEFAULT_PORT_CONFLICT,
+		/** Restarted dsh runs inside a console: "visible" shows it, "hidden" does not. */
+		restartWindow: "visible",
 		/** A replacement that dies faster than this counts as an "immediate" crash. */
 		rapidDeathMs: 3000,
 		/** How many immediate crashes in a row end supervision instead of retrying. */
@@ -86,6 +86,9 @@ export function parseArgs(argv) {
 				break;
 			case "--window-ms":
 				options.windowMs = Number(next());
+				break;
+			case "--restart-window":
+				options.restartWindow = String(next()) === "hidden" ? "hidden" : "visible";
 				break;
 			case "--port-conflict":
 				options.portConflict = String(next()) === "replace" ? "replace" : DEFAULT_PORT_CONFLICT;
@@ -599,35 +602,41 @@ export async function runWatchdog(options) {
 		rmSync(join(stateDir, CLEAN_EXIT), { force: true });
 		const startedAt = Date.now();
 		const dshLog = join(stateDir, DSH_LOG);
-		let out = "ignore";
-		try {
-			out = openSync(dshLog, "a");
-		} catch {
-			out = "ignore";
-		}
 		log(`starting dsh: ${invocation.execPath} ${invocation.args.join(" ")} (cwd ${invocation.cwd})`);
 		appendFileSync(dshLog, `\n===== dsh-guard: start ${now()} =====\n`, "utf8");
-		child = spawn(invocation.execPath, invocation.args, {
-			cwd: invocation.cwd,
-			env: process.env,
-			stdio: ["ignore", out, out],
-			// `detached: true` is REQUIRED here, not cosmetic. The watchdog is itself
-			// started detached with stdio ignored, so it has no console; on Windows a
-			// console-less process launching a NON-detached console program fails at
-			// load time with 0xC0000142 (exit code 3221225794) before Node can print
-			// anything. A force-kill test found every replacement dying in ~40ms with
-			// no output for exactly this reason. Detaching gives the child its own
-			// console; the watchdog still holds the handle, so 'exit' and kill() work.
-			detached: true,
-			windowsHide: true,
-		});
-		if (out !== "ignore") {
-			try {
-				closeSync(out);
-			} catch {
-				/* the child owns the descriptor now */
-			}
-		}
+
+		// -- launch inside a console, via the console host --------------------
+		//
+		// A console-less dsh is not merely windowless: every console child it
+		// spawns (dsh runs one per background job) gets a BRAND NEW console window,
+		// which is the black box that kept flashing for every job. Giving dsh a
+		// console fixes it, because children then inherit that console.
+		//
+		// Nothing in Node can create a console, so PowerShell is asked to: it
+		// allocates one, then runs the console host inside it. The host runs dsh as
+		// its child (inheriting the console), tees dsh's output to the window and
+		// `dsh.log`, and reports the real exit code in `<log>.exit.json` — a 32-bit
+		// crash code can be clamped on the way out through the wrappers.
+		const consoleHost = fileURLToPath(new URL("./console-host.mjs", import.meta.url));
+		const quote = (value) => `'${String(value).replaceAll("'", "''")}'`;
+		const hostCommand = [
+			`& ${quote(process.execPath)} ${quote(consoleHost)} --log ${quote(dshLog)} --`,
+			quote(invocation.execPath),
+			...invocation.args.map((argument) => quote(argument)),
+		].join(" ");
+		const windowStyle = options.restartWindow === "hidden" ? "Hidden" : "Normal";
+		child = spawn(
+			"powershell.exe",
+			["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-WindowStyle", windowStyle, "-Command", `${hostCommand}; exit $LASTEXITCODE`],
+			{
+				cwd: invocation.cwd,
+				env: process.env,
+				// Not detached and not hidden: the process must be allowed to own a
+				// console, and -WindowStyle decides whether that window is visible.
+				stdio: "ignore",
+				windowsHide: false,
+			},
+		);
 		child.on("error", (error) => log(`child spawn error: ${String(error?.message ?? error)}`));
 		const spawnFailed = await new Promise((resolvePromise) => {
 			child.once("spawn", () => resolvePromise(false));
@@ -646,9 +655,16 @@ export async function runWatchdog(options) {
 		// reads: assigning above must be the binding used below.
 		if (supervising !== true) throw new Error("dsh-guard: internal invariant violated — supervising was reset after spawn");
 
-		const { code, signal } = await new Promise((resolvePromise) => {
+		const wrapperExit = await new Promise((resolvePromise) => {
 			child.once("exit", (exitCode, exitSignal) => resolvePromise({ code: exitCode, signal: exitSignal }));
 		});
+		// Prefer the console host's own record: it survives the clamping a 32-bit
+		// crash code can suffer while travelling out through PowerShell.
+		const reported = readJson(`${dshLog}.exit.json`);
+		const reportedAt = Date.parse(String(reported?.at ?? ""));
+		const wrapped = reported !== undefined && reported !== null && Number.isFinite(reportedAt) && reportedAt >= startedAt - 2000;
+		const code = wrapped && typeof reported.code === "number" ? reported.code : wrapperExit.code;
+		const signal = wrapped && typeof reported.signal === "string" ? reported.signal : wrapperExit.signal;
 		const livedMs = Date.now() - startedAt;
 		child = null;
 
