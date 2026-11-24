@@ -461,8 +461,8 @@ export async function runWatchdog(options) {
 	//     with no supervisor at all, so the first crash after a restart was silent.
 	// The correct rule: observe the parent, and start supervising when it dies.
 	const initialParent = options.parentPid ?? readJson(join(stateDir, INSTANCE))?.pid ?? null;
+	const instanceBefore = readJson(join(stateDir, INSTANCE));
 	if (typeof initialParent === "number" && initialParent > 0 && isAlive(initialParent)) {
-		const instanceBefore = readJson(join(stateDir, INSTANCE));
 		log(`guarding live pid ${String(initialParent)}; waiting for it to exit before taking over`);
 		// A clean exit while we wait must END supervision rather than cause a
 		// restart: the Quit button writes its marker precisely so the guard stands
@@ -518,6 +518,32 @@ export async function runWatchdog(options) {
 			"utf8",
 		);
 		log(`recorded the observed exit in ${CRASH_REPORT}`);
+	}
+
+	// A watchdog can also be armed at a moment when the guarded dsh is ALREADY
+	// gone: the plugin replaces a dead supervisor, and that replacement may land in
+	// the same millisecond as a Quit. The observe loop above is then skipped
+	// entirely, so the "this was intentional" marker has to be honoured here too —
+	// otherwise a deliberate Quit is "repaired" into a restart, and the user who
+	// asked for an exit gets a fresh dsh they did not ask for.
+	//
+	// Staleness: the plugin deletes both markers when it mounts, so a marker can
+	// only belong to the life that just ended. The timestamp guard covers the one
+	// case that rule cannot: a dsh that died before its plugin mounted, leaving the
+	// marker from the PREVIOUS quit on disk. A marker older than the guarded
+	// instance cannot describe this death.
+	{
+		const marker = readJson(join(stateDir, CLEAN_EXIT)) ?? readJson(join(stateDir, STOP));
+		if (marker !== undefined && marker !== null) {
+			const instanceMs = Date.parse(String(instanceBefore?.startedAt ?? ""));
+			const markerMs = Date.parse(String(marker.at ?? ""));
+			const stale = Number.isFinite(instanceMs) && Number.isFinite(markerMs) && markerMs < instanceMs;
+			if (!stale) {
+				stop("the guarded dsh asked to exit (clean-exit marker) before this watchdog took over");
+				return;
+			}
+			log(`ignoring a stale clean-exit marker (${String(marker.at ?? "?")}) from before the guarded dsh started`);
+		}
 	}
 
 	for (;;) {

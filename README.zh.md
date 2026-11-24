@@ -106,6 +106,7 @@ powershell -ExecutionPolicy Bypass -File .\install-guard.ps1
         maxRapidRestarts: 3   # 连续几次「刚起来就崩」后放弃重启
         portConflict: halt    # 端口被占：halt=停下诊断 / replace=杀掉占用者
         restartWindow: visible # 重启后的 dsh 控制台窗口：visible 可见 / hidden 隐藏（都不会再弹后台任务黑框）
+        watchdogCheckMs: 60000 # 每多少毫秒检查一次看门狗是否还活着，死了就补一个（0 = 不检查）
         tailEvents: 40        # 快照里保留多少条最近事件
         timeoutMs: 4000       # 优雅退出的兜底超时
         keepSessions: 12      # 保留多少份 per-session 快照
@@ -134,6 +135,24 @@ powershell -ExecutionPolicy Bypass -File .\install-guard.ps1
 
 > 默认 `false` 是刻意的：自动续跑会重放一轮工作，如果上一轮的写入其实已经落盘，
 > 就可能重复副作用。要不要开由你定。
+
+### 看门狗自己也会死：心跳补位（`watchdogCheckMs`）
+
+看门狗是独立进程，但独立不等于不死：被人杀掉、OOM、注销，都可能让它消失。它一消失，
+「崩了就重启」这条保证就在**没人知道**的情况下失效了 —— 直到外部计划任务把它补回来
+（默认 2 分钟一拍）。
+
+所以插件每 `watchdogCheckMs`（默认 60s）确认一次 `status.watchdog.pid` 是否还活着，
+不活着就补一个。补位前会先读 `watchdog.pid`：已有活着的看门狗就只**认领**、不新建，
+所以补位不会和原有看门狗打架，也不会出现两个看门狗同时拉 dsh。
+
+补位踩过一个很隐蔽的坑：看门狗原本只在 dsh **还活着**的时候被布下，因此它总能进入
+「观察父进程」的分支，并在那里检查 `clean-exit.json`。补位打破了这个前提 —— 补位可能
+正好落在 Quit 的同一毫秒，父进程已经没了，观察分支被整个跳过，于是没人看那个标记，
+用户刚退出的 dsh 被「修复」成重启。现在看门狗在进入重启循环**之前**也会检查标记，
+并忽略比本次 dsh 启动时间更旧的陈旧标记（否则一次插件挂载前就崩掉的 dsh 会继承
+上一次退出的标记，从此再也不重启）。`test/watchdog-standdown.test.mjs` 把这两种情况
+都锁住了。
 
 ---
 
@@ -321,7 +340,8 @@ node test/client-bundle.test.mjs   # 客户端 bundle 契约：注册工厂、�
 node test/snapshot.test.mjs        # 快照折叠、resume 简报、配置解析
 node test/watchdog-policy.test.mjs # 重启判定、端口预检、启动配方读取
 node test/check-patch.mjs <patch>  # 静态检查：dsh-guard 只挂一次、配置项类型正确
-node test/quit-e2e.mjs             # 端点级：临时 DSH_HOME 里起一次性 dsh，验证退出全链路
+node test/quit-e2e.mjs             # 端点级：临时 DSH_HOME 里起一次性 dsh，验证退出全链路 + 看门狗补位
+node test/watchdog-standdown.test.mjs # 看门狗在 dsh 已经消失后才启动时，仍须尊重退出标记
 node test/crash-e2e.mjs            # 破坏性：强杀一次性 dsh 两次，验证看门狗重启与取证
 .\install-guard.ps1 -Test          # 以上全部（会启动并强杀一次性 dsh）
 ```
@@ -343,9 +363,16 @@ patch 的手术刀只有一把：`bin/patch-guard.mjs`。安装器与卸载器�
 1. 插件挂载、`/dsh-guard/status` 可读、看门狗拉起；
 2. **看门狗 2.5 秒后仍然活着**（这条断言是补上去的：早期它启动就自己退出，
    而旧断言只查了内存里的 `watchdog.status`，于是整条重启功能是死的但测试全绿）；
-3. `POST /dsh-guard/quit` 返回 200 并写下 `clean-exit.json`；
-4. 进程**自己**以退出码 0 结束（优雅 dispose，不是被 kill）；
-5. 看门狗看到标记后退出，没有第二个 dsh 被拉起。
+3. **杀掉看门狗后，插件在一个心跳内补一个新的**（pid 变了、进程真的活着、`watchdog.pid` 跟着更新）；
+4. `POST /dsh-guard/quit` 返回 200 并写下 `clean-exit.json`；
+5. 进程**自己**以退出码 0 结束（优雅 dispose，不是被 kill）；
+6. 看门狗（此时是补位那个）看到标记后退出，没有第二个 dsh 被拉起。
+
+第 3 条是这次实测逼出来的：原先插件只在挂载时布一次看门狗，看门狗一死就没人管，
+实测里那次 48 秒的「重启」其实是 2 分钟巡检的计划任务在兜底。补位加上之后，
+第 6 条立刻暴露了第二个缺陷 —— 补位可能落在 Quit 的同一毫秒，此时看门狗启动时
+父进程已经消失，从不检查 `clean-exit.json`，于是把用户刚退出的 dsh 又拉了起来。
+`test/watchdog-standdown.test.mjs` 专门锁这条路径。
 
 `test/crash-e2e.mjs`（异常终止，破坏性）：
 

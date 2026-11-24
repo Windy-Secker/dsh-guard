@@ -45,6 +45,8 @@ Configuration (profile `cordis.patch.yml`):
 | `maxRestarts` / `crashWindowMs` | `10` / `600000` | boot-loop brake |
 | `rapidDeathMs` / `maxRapidRestarts` | `3000` / `3` | **a restart that dies this fast, this many times in a row, ends supervision** instead of retrying |
 | `portConflict` | `halt` | when the recorded port is held elsewhere: `halt` diagnoses and stops, `replace` kills the holder |
+| `restartWindow` | `visible` | console window of a restarted dsh: `visible` shows it, `hidden` keeps it off screen (a console exists either way, so background jobs stop popping windows) |
+| `watchdogCheckMs` | `60000` | how often the plugin checks that its watchdog is still alive and replaces a dead one (`0` disables) |
 | `tailEvents` | `40` | recent events kept in the snapshot |
 | `timeoutMs` | `4000` | graceful-shutdown backstop |
 | `keepSessions` | `12` | per-session snapshots retained |
@@ -84,6 +86,22 @@ the window and to `dsh.log`, and reports the real exit code in
 
 `restore-normal.ps1` is the emergency exit for testing: it stops the watchdog so
 nothing races for the port, then starts dsh the ordinary way in a visible window.
+
+The watchdog is a separate process, not an immortal one: killed by hand, OOM,
+a logoff, and the promise "a crash is restarted" quietly lapses with nobody
+noticing. The plugin therefore re-checks `watchdog.pid` every `watchdogCheckMs`
+and arms a replacement, adopting a live one instead of duplicating it.
+
+That re-arm has a sharp edge, and a live test found it. The watchdog used to be
+armed only while its dsh was alive, so it always entered the "observe the parent"
+branch, which is where the quit markers are honoured. A re-arm can instead land in
+the very millisecond of a Quit: the parent is already gone, the observe branch is
+skipped entirely, and nothing looked at the marker — a dsh the user had just quit
+came back a second later. The watchdog now checks the markers before entering its
+restart loop too, and ignores a marker older than the guarded instance (the plugin
+deletes both markers at mount, so an older one describes a previous life — without
+that guard, a dsh that crashed before its plugin mounted would inherit the last
+quit's marker and never restart). `test/watchdog-standdown.test.mjs` covers both.
 
 All profile-patch editing goes through one helper, `bin/patch-guard.mjs`. The
 installer and uninstaller used to carry separate copies of that string surgery and

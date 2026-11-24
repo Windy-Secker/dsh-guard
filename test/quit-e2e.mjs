@@ -174,6 +174,9 @@ try {
 			`        stateDir: '${stateDir.replace(/\\/gu, "/")}'`,
 			"        watchdog: true",
 			"        autoResume: false",
+			// Short beat so the re-arm assertion below can run in seconds instead of
+			// waiting out the shipped one-minute cadence.
+			"        watchdogCheckMs: 2000",
 			"",
 		].join("\n"),
 		"utf8",
@@ -244,6 +247,9 @@ try {
 	step(status.port === port, "status reports the bound port", String(status.port));
 	step(status.watchdog?.status === "running", "watchdog spawned", JSON.stringify(status.watchdog));
 	const watchdogPid = typeof status.watchdog?.pid === "number" ? status.watchdog.pid : null;
+	// Whoever is supervising at quit time — the original watchdog, or the one the
+	// plugin armed after we killed it below.
+	let currentWatchdogPid = watchdogPid;
 
 	// Liveness, not the reported status. This is the assertion that was missing
 	// when the watchdog stood down at boot while `status.watchdog` still said
@@ -266,6 +272,40 @@ try {
 			}
 		})();
 		step(!/standing down/u.test(logText), "the watchdog log shows no stand-down at boot");
+
+		// A supervisor that dies must be replaced by the plugin itself, not by the
+		// external autostart task minutes later: supervision that quietly lapses is
+		// worse than none, because the guard still claims to be on.
+		try {
+			process.kill(watchdogPid, "SIGKILL");
+		} catch {
+			/* it may have exited on its own */
+		}
+		const replacement = await waitFor(async () => {
+			const next = await call(`http://127.0.0.1:${String(port)}/dsh-guard/status`);
+			const pid = next.body?.watchdog?.pid;
+			return typeof pid === "number" && pid !== watchdogPid ? pid : undefined;
+		}, 20_000, 500);
+		step(replacement !== undefined, "the plugin re-arms a dead watchdog", `pid ${String(replacement)}`);
+		if (replacement !== undefined) {
+			currentWatchdogPid = replacement;
+			let replacementAlive = false;
+			try {
+				process.kill(replacement, 0);
+				replacementAlive = true;
+			} catch (error) {
+				replacementAlive = error?.code === "EPERM";
+			}
+			step(replacementAlive, "the re-armed watchdog is actually alive", `pid ${String(replacement)}`);
+			const recordedPid = (() => {
+				try {
+					return JSON.parse(readFileSync(join(stateDir, "watchdog.pid"), "utf8")).pid;
+				} catch {
+					return undefined;
+				}
+			})();
+			step(recordedPid === replacement, "the pid file records the re-armed watchdog", `${String(recordedPid)} vs ${String(replacement)}`);
+		}
 	}
 
 	// What the host will serve as the client bundle must be a registering bundle.
@@ -301,9 +341,9 @@ try {
 	step(outcome?.code === 0, "exit code is 0 (graceful dispose, not a kill)", JSON.stringify(outcome ?? null));
 
 	const watchdogGone = await waitFor(() => {
-		if (watchdogPid === null) return true;
+		if (currentWatchdogPid === null) return true;
 		try {
-			process.kill(watchdogPid, 0);
+			process.kill(currentWatchdogPid, 0);
 			return undefined;
 		} catch {
 			return true;
@@ -311,8 +351,18 @@ try {
 	}, 15_000, 500);
 	step(watchdogGone === true, "watchdog stood down instead of restarting dsh");
 
-	// A restart would show up as a second supervised start block in the log.
-	const restarts = (readOutput().match(/dsh-guard: start/gu) ?? []).length;
+	// A restart would show up as a second supervised start block. The first dsh
+	// writes to the harness log we redirected; a restarted one is tee-ed into the
+	// state directory's dsh.log, so both have to be counted.
+	const startMarkers = (text) => (text.match(/dsh-guard: start/gu) ?? []).length;
+	const restartLog = (() => {
+		try {
+			return readFileSync(join(stateDir, "dsh.log"), "utf8");
+		} catch {
+			return "";
+		}
+	})();
+	const restarts = startMarkers(readOutput()) + startMarkers(restartLog);
 	step(restarts <= 1, "no replacement dsh was spawned", `${String(restarts)} start marker(s)`);
 } catch (error) {
 	failures.push(error.message);
